@@ -1,5 +1,6 @@
 from mpi4py import MPI
 import datetime
+import math
 
 def f(x):
     return 5*x**3 + 3*x**2 + 4*x + 20
@@ -11,11 +12,23 @@ def trapezoidal_rule(a, b, n):
         soma += f(a + i * h)
     return soma * h
 
+def butterfly_sum(comm, local_value):
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    step = 1
+    while step < size:
+        partner = rank ^ step
+        if partner < size:
+            partner_value = comm.sendrecv(local_value, dest=partner, source=partner)
+            if rank < partner:
+                local_value += partner_value
+        step *= 2
+    return local_value
+
 comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
 
-val = [0]
 a = 0.0
 b = 1000000.0
 n = 10000000
@@ -24,34 +37,34 @@ if rank == 0:
     wt = MPI.Wtime()
     start_time = datetime.datetime.now()
 
-    val[0] = n
-    val = comm.bcast(val, root=0)  # Broadcast para todos os processos
+# Broadcast de n para todos os processos
+val = comm.bcast(n if rank == 0 else None, root=0)
 
-    parte_n = int(n / size)
-    inicio = parte_n * rank
-    fim = inicio + parte_n
-    if rank == size - 1:
-        fim = n
+parte_n = int(val / size)
+inicio = parte_n * rank
+fim = inicio + parte_n if rank != size - 1 else val
 
-    local_integral = trapezoidal_rule(a + (b - a) * inicio / n, a + (b - a) * fim / n, parte_n)
-    total_integral = comm.reduce(local_integral, op=MPI.SUM, root=0)  # Reduce para soma das integrais
+local_integral = trapezoidal_rule(a + (b - a) * inicio / val, a + (b - a) * fim / val, parte_n)
 
+# MPI.Reduce
+start_reduce = MPI.Wtime()
+total_integral_reduce = comm.reduce(local_integral, op=MPI.SUM, root=0)
+end_reduce = MPI.Wtime()
+
+# Butterfly
+start_butterfly = MPI.Wtime()
+total_integral_butterfly = butterfly_sum(comm, local_integral)
+end_butterfly = MPI.Wtime()
+
+if rank == 0:
     wt = MPI.Wtime() - wt
     end_time = datetime.datetime.now()
     execution_time = (end_time - start_time).total_seconds()
 
-    print("Resultado da integral:", total_integral)
-    print("Tempo de execução (MPI.Wtime):", wt)
-    print("Tempo de execução (datetime):", execution_time)
+    print("Resultado da integral com MPI.Reduce:", total_integral_reduce)
+    print("Tempo de execução do MPI.Reduce:", end_reduce - start_reduce)
 
-else:
-    val = comm.bcast(val, root=0)  # Recebe o broadcast do mestre
+    print("Resultado da integral com Butterfly:", total_integral_butterfly)
+    print("Tempo de execução do Butterfly:", end_butterfly - start_butterfly)
 
-    parte_n = int(val[0] / size)
-    inicio = parte_n * rank
-    fim = inicio + parte_n
-    if rank == size - 1:
-        fim = val[0]
-
-    local_integral = trapezoidal_rule(a + (b - a) * inicio / val[0], a + (b - a) * fim / val[0], parte_n)
-    comm.reduce(local_integral, op=MPI.SUM, root=0)  # Participa do reduce para soma das integrais
+    print("Tempo total de execução (datetime):", execution_time)
